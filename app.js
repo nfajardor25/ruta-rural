@@ -1,21 +1,37 @@
 /* =========================================================
    Ruta Rural · app principal (sin frameworks, funciona sin internet)
+   Versión 1.1: contenido organizado por materias del pensum.
    ========================================================= */
 (function () {
   'use strict';
-  var VERSION = '1.0.0';
-  var NUEVAS_POR_DIA = 15;
+  var VERSION = '1.1.0';
+  var NUEVAS_POR_DIA = 20;
+  var PREGUNTAS_POR_PARTIDA = 20;
   var KEY = 'rr_v1';
   var DIA = 864e5;
 
-  var TARJETAS = window.RR_TARJETAS, MODULOS = window.RR_MODULOS;
+  var RR = window.RR, GEN = window.RR_GEN;
+  var TARJETAS = RR.tarjetas, MATERIAS = RR.materias, ENFASIS = RR.enfasis;
+  var TID = {}; TARJETAS.forEach(function (c) { TID[c.id] = c; });
+  Object.keys(RR.juegos).forEach(function (k) { RR.juegos[k].forEach(function (g) { g.mat = k; }); });
+  var TOTAL_JUEGOS = Object.keys(RR.juegos).reduce(function (a, k) { return a + RR.juegos[k].length; }, 0);
+  var PERIODOS = []; MATERIAS.forEach(function (m) { if (PERIODOS.indexOf(m.periodo) < 0) PERIODOS.push(m.periodo); });
+
+  var CLARA = {
+    animo: ['¡Vamos bien, jefe {n}!', 'Un paso más hacia tu rural, jefe {n}.', 'Así se repasa, jefe {n}.', 'Cada tarjeta cuenta, jefe {n}.'],
+    fallo: ['Tranquila, jefe {n}: equivocarse aquí es mejor que en el puesto de salud.', 'Casi, jefe {n}. Mira la explicación y la próxima sale.', 'No pasa nada, jefe {n}. Esta te la vuelvo a traer pronto.'],
+    bien: ['¡Eso, jefe {n}!', '¡Correcto, jefe {n}!', '¡Muy bien, jefe {n}!', '¡Así es, jefe {n}!']
+  };
+
   var vista = document.getElementById('vista');
   var navZona = document.getElementById('nav-zona');
   var toastZona = document.getElementById('toast-zona');
 
   /* ---------- Estado guardado en el celular ---------- */
+  function estadoBase(nombre) { return { nombre: nombre || '', srs: {}, dias: [], vistosCaso: [], vistosJuego: [], nuevasHoy: { fecha: '', n: 0 }, stats: { tarjetas: 0, juegos: 0, casos: 0 }, mejores: {} }; }
   function cargar() { try { return JSON.parse(localStorage.getItem(KEY)) || {}; } catch (e) { return {}; } }
-  var S = Object.assign({ nombre: '', srs: {}, dias: [], vistosCaso: [], vistosJuego: [], nuevasHoy: { fecha: '', n: 0 }, stats: { tarjetas: 0, juegos: 0, casos: 0 } }, cargar());
+  var S = Object.assign(estadoBase(), cargar());
+  if (!S.mejores) S.mejores = {};
   function guardar() { try { localStorage.setItem(KEY, JSON.stringify(S)); } catch (e) { } }
 
   /* ---------- Utilidades ---------- */
@@ -23,13 +39,42 @@
   function nom(s) { return s.replace(/\{n\}/g, esc(S.nombre || 'colega')); }
   function pick(a) { return a[Math.floor(Math.random() * a.length)]; }
   function mezclar(arr) { var a = arr.slice(); for (var i = a.length - 1; i > 0; i--) { var j = Math.floor(Math.random() * (i + 1)); var t = a[i]; a[i] = a[j]; a[j] = t; } return a; }
+  function mezclarDistinto(arr) { var a = arr; for (var i = 0; i < 12; i++) { a = mezclar(arr); if (a.some(function (x, k) { return x !== arr[k]; })) break; } return a; }
   function ymd(d) { return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0'); }
   function hoy() { return ymd(new Date()); }
   function saludo() { var h = new Date().getHours(); return h < 12 ? 'Buenos días' : (h < 19 ? 'Buenas tardes' : 'Buenas noches'); }
   function capital(s) { return s.charAt(0).toUpperCase() + s.slice(1); }
-  function modulo(id) { return MODULOS.filter(function (m) { return m.id === id; })[0]; }
-  function tarjetasDe(mod) { return TARJETAS.filter(function (c) { return !mod || c.m === mod; }); }
+  function plural(n, uno, varios) { return n + ' ' + (n === 1 ? uno : varios); }
   function dominada(c) { var s = S.srs[c.id]; return s && s.reps >= 2 && s.int >= 6; }
+  function pct(cs) { return cs.length ? Math.round(cs.filter(dominada).length / cs.length * 100) : 0; }
+  function yt(id) { return 'https://www.youtube.com/watch?v=' + encodeURIComponent(id); }
+  function ytBuscar(q) { return 'https://www.youtube.com/results?search_query=' + encodeURIComponent(q); }
+
+  /* Claves de filtro para tarjetas: '' (todas), 'm-<materia>' o 'e-<énfasis>' */
+  function clave(cl) {
+    if (!cl) return '';
+    if (/^m-/.test(cl) && RR.mat[cl.slice(2)]) return cl;
+    if (/^e-/.test(cl) && RR.enf[cl.slice(2)]) return cl;
+    if (RR.enf[cl]) return 'e-' + cl;
+    if (RR.mat[cl]) return 'm-' + cl;
+    return '';
+  }
+  function tarjetasDe(cl) {
+    if (!cl) return TARJETAS;
+    var v = cl.slice(2), porMateria = cl.charAt(0) === 'm';
+    return TARJETAS.filter(function (c) { return porMateria ? c.mat === v : c.e === v; });
+  }
+  function nombreDe(cl) { var v = cl.slice(2); return cl.charAt(0) === 'm' ? RR.mat[v].nombre : RR.enf[v].nombre; }
+  function hrefDe(cl) { var v = cl.slice(2); return cl.charAt(0) === 'm' ? '#/materia/' + v : '#/enfasis/' + v; }
+
+  /* Orden de las tarjetas nuevas en el repaso general: una de cada materia por turno,
+     empezando por las materias clínicas (periodos altos), que son las del día a día del rural. */
+  var ORDEN_GENERAL = (function () {
+    var grupos = MATERIAS.slice().sort(function (a, b) { return b.periodo - a.periodo; }).map(function (m) { return tarjetasDe('m-' + m.id); });
+    var out = [], i = 0, quedan = true;
+    while (quedan) { quedan = false; grupos.forEach(function (g) { if (i < g.length) { out.push(g[i]); quedan = true; } }); i++; }
+    return out;
+  })();
 
   /* ---------- Íconos y Clara ---------- */
   var IC = {
@@ -48,9 +93,26 @@
     left: '<path d="m15 18-6-6 6-6"/>', right: '<path d="m9 18 6-6-6-6"/>',
     gear: '<circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/>',
     ext: '<path d="M14 4h6v6M20 4 10 14M18 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h5"/>',
-    book: '<path d="M4 4h6a3 3 0 0 1 3 3v13a2 2 0 0 0-2-2H4zM20 4h-6a3 3 0 0 0-3 3v13a2 2 0 0 1 2-2h7z"/>'
+    book: '<path d="M4 4h6a3 3 0 0 1 3 3v13a2 2 0 0 0-2-2H4zM20 4h-6a3 3 0 0 0-3 3v13a2 2 0 0 1 2-2h7z"/>',
+    scale: '<path d="M12 3v18M7 21h10M5 7h14M5 7l-3 7a3 3 0 0 0 6 0zM19 7l-3 7a3 3 0 0 0 6 0z"/>',
+    flask: '<path d="M9 3h6M10 3v6L4.6 18.4A1.8 1.8 0 0 0 6.2 21h11.6a1.8 1.8 0 0 0 1.6-2.6L14 9V3M7.5 15h9"/>',
+    body: '<circle cx="12" cy="4.5" r="2.5"/><path d="M12 7.5V14M6 10h12M12 14l-3.5 7M12 14l3.5 7"/>',
+    brain: '<path d="M9.5 4A2.5 2.5 0 0 0 7 6.5 3 3 0 0 0 4.5 11a3 3 0 0 0 1 5A3 3 0 0 0 11 18.5V5.5A2 2 0 0 0 9.5 4zM14.5 4A2.5 2.5 0 0 1 17 6.5a3 3 0 0 1 2.5 4.5 3 3 0 0 1-1 5 3 3 0 0 1-5.5 2.5V5.5A2 2 0 0 1 14.5 4z"/>',
+    globe: '<circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a14 14 0 0 1 0 18M12 3a14 14 0 0 0 0 18"/>',
+    chart: '<path d="M3 20h18M7 16v-5M12 16V6M17 16v-8"/>',
+    pill: '<path d="M10.5 20.5a5 5 0 0 1-7-7l10-10a5 5 0 0 1 7 7z"/><path d="m8.5 8.5 7 7"/>',
+    users: '<circle cx="9" cy="8" r="3.5"/><path d="M2.5 20a6.5 6.5 0 0 1 13 0M16 4.5a3.5 3.5 0 0 1 0 7M18 14a6 6 0 0 1 4 6"/>',
+    stetho: '<path d="M6 3H5v6a5 5 0 0 0 10 0V3h-1M10 14v1a5 5 0 0 0 10 0v-3"/><circle cx="20" cy="10" r="2"/>',
+    baby: '<circle cx="12" cy="12" r="9"/><path d="M9 11h.01M15 11h.01M9.5 15a3.5 3.5 0 0 0 5 0M12 3a2 2 0 0 0 2 2"/>',
+    scissors: '<circle cx="6" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><path d="M20 4 8.1 15.9M14.5 14.5 20 20M8.1 8.1 12 12"/>',
+    shield: '<path d="M12 3 4 6v6c0 5 3.5 8 8 9 4.5-1 8-4 8-9V6z"/><path d="m9 12 2 2 4-4"/>',
+    pulse: '<path d="M3 12h4l3-8 4 16 3-8h4"/>',
+    calc: '<rect x="5" y="3" width="14" height="18" rx="2"/><path d="M8 7h8M8 11h.01M12 11h.01M16 11h.01M8 15h.01M12 15h.01M16 15h.01M8 18h.01M12 18h4"/>',
+    shuffle: '<path d="M16 3h5v5M4 20 21 3M21 16v5h-5M15 15l6 6M4 4l5 5"/>',
+    search: '<circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/>',
+    star: '<path d="m12 3 2.8 5.7 6.2.9-4.5 4.4 1 6.2L12 17.3 6.5 20.2l1-6.2L3 9.6l6.2-.9z"/>'
   };
-  function ic(n, s, color) { return '<svg width="' + (s || 22) + '" height="' + (s || 22) + '" viewBox="0 0 24 24" fill="none" stroke="' + (color || 'currentColor') + '" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' + IC[n] + '</svg>'; }
+  function ic(n, s, color) { return '<svg width="' + (s || 22) + '" height="' + (s || 22) + '" viewBox="0 0 24 24" fill="none" stroke="' + (color || 'currentColor') + '" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' + (IC[n] || IC.book) + '</svg>'; }
 
   function clara(size, etiqueta) {
     var aria = etiqueta === false ? 'aria-hidden="true"' : 'role="img" aria-label="Clara, tu enfermera asistente"';
@@ -65,7 +127,8 @@
       '<path d="M53 68c4 4 10 4 14 0" fill="none" stroke="#7A3B2E" stroke-width="2.5" stroke-linecap="round"/></svg>';
   }
   function claraDice(html, size, clase) { return '<div class="clara-dice pop ' + (clase || '') + '">' + clara(size || 48) + '<div class="burbuja">' + html + '</div></div>'; }
-  function atras(href, txt) { return '<a class="atras" href="' + (href || '#/inicio') + '">' + ic('left', 18) + (txt || 'Inicio') + '</a>'; }
+  function atras(href, txt) { return '<a class="atras" href="' + (href || '#/inicio') + '">' + ic('left', 18) + esc(txt || 'Inicio') + '</a>'; }
+  function barraProg(p, clase) { return '<span class="prog ' + (clase || '') + '"><span style="width:' + p + '%"></span></span>'; }
 
   /* ---------- Toasts de Clara ---------- */
   function toast(html, boton, accion, ms) {
@@ -94,8 +157,8 @@
 
   /* ---------- Repetición espaciada (estilo SM-2) ---------- */
   function cupoNuevas() { if (S.nuevasHoy.fecha !== hoy()) S.nuevasHoy = { fecha: hoy(), n: 0 }; return Math.max(0, NUEVAS_POR_DIA - S.nuevasHoy.n); }
-  function vencidas(mod) { var ahora = Date.now(); return tarjetasDe(mod).filter(function (c) { var s = S.srs[c.id]; return s && s.due <= ahora; }).sort(function (a, b) { return S.srs[a.id].due - S.srs[b.id].due; }); }
-  function nuevas(mod) { return tarjetasDe(mod).filter(function (c) { return !S.srs[c.id]; }); }
+  function vencidas(cl) { var ahora = Date.now(); return tarjetasDe(cl).filter(function (c) { var s = S.srs[c.id]; return s && s.due <= ahora; }).sort(function (a, b) { return S.srs[a.id].due - S.srs[b.id].due; }); }
+  function nuevas(cl) { return (cl ? tarjetasDe(cl) : ORDEN_GENERAL).filter(function (c) { return !S.srs[c.id]; }); }
   function siguiente(st, q) {
     var s = Object.assign({ ef: 2.5, int: 0, reps: 0, due: 0 }, st || {});
     if (q < 3) { s.reps = 0; s.int = 0; s.due = Date.now() + 60000; return s; }
@@ -116,7 +179,7 @@
   }
 
   /* ---------- Navegación ---------- */
-  var NAV = [['inicio', 'home', 'Inicio'], ['tarjetas', 'cards', 'Tarjetas'], ['juego', 'game', 'Juegos'], ['caso', 'case', 'Casos'], ['videos', 'play', 'Videos']];
+  var NAV = [['inicio', 'home', 'Inicio'], ['tarjetas', 'cards', 'Tarjetas'], ['juegos', 'game', 'Juegos'], ['caso', 'case', 'Casos'], ['videos', 'play', 'Videos']];
   function pintarNav(activo) {
     if (!activo) { navZona.innerHTML = ''; return; }
     navZona.innerHTML = '<div class="nav-wrap"><nav class="nav" aria-label="Navegación principal">' + NAV.map(function (n) {
@@ -128,7 +191,7 @@
      VISTAS
      ========================================================= */
   var V = {};
-  var mem = { sesion: null, juego: null, caso: null, calMes: 0, nombreTmp: '', confirmarReinicio: false, filtroVideo: '' };
+  var mem = { sesion: null, partida: null, calc: null, caso: null, calMes: 0, confirmarReinicio: false };
 
   /* ---------- Bienvenida (solo la primera vez) ---------- */
   V.bienvenida = function () {
@@ -154,36 +217,34 @@
     var r = rachaActual();
     var fecha = capital(new Date().toLocaleDateString('es-CO', { weekday: 'long', day: 'numeric', month: 'long' }));
     var dato = TARJETAS[Math.floor(Date.now() / DIA) % TARJETAS.length];
-    // semana actual (lunes a domingo)
     var d0 = new Date(); var dow = (d0.getDay() + 6) % 7; var lunes = new Date(d0.getTime() - dow * DIA);
     var set = {}; S.dias.forEach(function (x) { set[x] = 1; });
-    var letras = ['L', 'M', 'M', 'J', 'V', 'S', 'D'];
-    var semana = letras.map(function (l, i) {
+    var semana = ['L', 'M', 'M', 'J', 'V', 'S', 'D'].map(function (l, i) {
       var d = new Date(lunes.getTime() + i * DIA); var k = ymd(d); var esHoy = k === hoy();
       var cls = esHoy ? (set[k] ? 'hecho' : 'hoy') : (set[k] ? 'hecho' : (d < d0 ? 'falta' : 'futuro'));
-      var dentro = esHoy && !set[k] ? ic('flame', 18) : d.getDate();
-      return '<span class="dia">' + l + '<span class="punto ' + cls + '">' + dentro + '</span></span>';
+      return '<span class="dia">' + l + '<span class="punto ' + cls + '">' + (esHoy && !set[k] ? ic('flame', 18) : d.getDate()) + '</span></span>';
     }).join('');
-    var venc = vencidas().length; var nuev = Math.min(cupoNuevas(), nuevas().length);
-    var mods = MODULOS.filter(function (m) { return m.enfasis; }).map(function (m) {
-      var cs = tarjetasDe(m.id); var pct = cs.length ? Math.round(cs.filter(dominada).length / cs.length * 100) : 0;
-      return '<a class="modulo c-' + m.color + '" href="#/modulo/' + m.id + '"><span class="ico">' + ic(m.icono, 20) + '</span><span class="nom">' + m.nombre + '</span><span class="sub">' + m.sub + '</span><span class="prog"><span style="width:' + pct + '%"></span></span></a>';
-    }).join('') + '<a class="modulo c-mauve" href="#/caso"><span class="ico">' + ic('hills', 20) + '</span><span class="nom">Casos del rural</span><span class="sub">Situaciones reales del puesto de salud</span><span class="prog"><span style="width:' + Math.min(100, S.stats.casos * 5) + '%"></span></span></a>';
+    var venc = vencidas('').length; var nuev = Math.min(cupoNuevas(), nuevas('').length);
+    var mods = ENFASIS.map(function (e) {
+      return '<a class="modulo c-' + e.color + '" href="#/enfasis/' + e.id + '"><span class="ico">' + ic(e.icono, 20) + '</span><span class="nom">' + esc(e.nombre) + '</span><span class="sub">' + esc(e.sub) + '</span>' + barraProg(pct(tarjetasDe('e-' + e.id))) + '</a>';
+    }).join('') + '<a class="modulo c-mauve" href="#/caso"><span class="ico">' + ic('hills', 20) + '</span><span class="nom">Casos del rural</span><span class="sub">Situaciones reales del puesto de salud</span>' + barraProg(Math.min(100, S.stats.casos * 5)) + '</a>';
     var html = '<div class="fila entre"><span class="marca">ruta<span>·</span>rural</span><span class="fila" style="gap:8px">' +
       '<a class="racha-pill" href="#/racha" aria-label="Racha de ' + r + ' días, ver calendario">' + ic('flame', 20) + r + '</a>' +
       '<a class="icono-btn" href="#/ajustes" aria-label="Ajustes">' + ic('gear', 20) + '</a></span></div>' +
       '<div style="display:flex;flex-direction:column;gap:4px"><p class="chico">' + fecha + '</p><h1 style="font-size:30px;line-height:1.08">' + saludo() + ',<br>jefe ' + esc(S.nombre) + '</h1>' +
       '<svg class="squiggle" width="132" height="12" viewBox="0 0 132 12" aria-hidden="true"><path d="M2 8c14-6 24 4 38-1s22-6 34 0 24 4 34-1 16-4 22-2" fill="none" stroke="#B9A8E8" stroke-width="4" stroke-linecap="round"/></svg></div>' +
-      claraDice('<strong>Dato del día · ' + dato.t + '</strong><br>' + dato.q + ' <strong>' + dato.a + '</strong>') +
+      claraDice('<strong>Dato del día · ' + esc(RR.mat[dato.mat].nombre) + '</strong><br>' + esc(dato.q) + ' <strong>' + esc(dato.a) + '</strong>') +
       '<a class="semana" href="#/racha" aria-label="Tu semana de estudio">' + semana + '</a>' +
       '<div class="hoy-card"><span class="circulo" aria-hidden="true"></span><p class="sobre">Tu repaso de hoy</p>' +
-      '<h2 style="font-size:24px;line-height:1.15">' + (venc + nuev) + ' tarjetas · 1 reto<br>1 caso nuevo</h2>' +
-      '<p style="font-size:14px;color:var(--soft)">' + venc + ' para repasar y ' + nuev + ' nuevas.</p>' +
-      '<a class="btn" href="#/tarjetas" style="align-self:flex-start;min-height:48px;margin-top:4px">Empezar ' + ic('right', 18) + '</a></div>' +
+      '<h2 style="font-size:24px;line-height:1.15">' + plural(venc + nuev, 'tarjeta', 'tarjetas') + ' · 1 reto<br>1 caso nuevo</h2>' +
+      '<p style="font-size:14px;color:var(--soft)">' + venc + ' para repasar y ' + nuev + ' nuevas, mezcladas de todas tus materias.</p>' +
+      '<div class="fila" style="flex-wrap:wrap;margin-top:4px"><a class="btn" href="#/tarjetas" style="min-height:48px">Empezar ' + ic('right', 18) + '</a><a class="btn suave" href="#/juego/mix" style="min-height:48px">' + ic('shuffle', 18) + 'Reto mixto</a></div></div>' +
       '<h2 class="titulo-sec">Énfasis para el rural</h2><div class="rejilla">' + mods + '</div>' +
-      '<a class="fila-link" href="#/pensum"><span style="display:flex;flex-direction:column;gap:4px"><span class="t">Todo el pensum</span><span class="mini">8 periodos · tu malla curricular completa</span></span>' + ic('right', 20) + '</a>';
+      '<a class="fila-link" href="#/pensum"><span style="display:flex;flex-direction:column;gap:4px"><span class="t">Mis materias</span><span class="mini">' + MATERIAS.length + ' materias · ' + TARJETAS.length + ' tarjetas · ' + TOTAL_JUEGOS + ' juegos</span></span>' + ic('right', 20) + '</a>';
     return { html: html, nav: 'inicio', despues: function () {
-      if (Math.random() < 0.35) setTimeout(function () { if (location.hash.indexOf('inicio') >= 0 || location.hash === '') { var c = pick(TARJETAS); toast('<strong>¿Te acuerdas?</strong> ' + c.n); } }, 2500);
+      if (Math.random() < 0.35) setTimeout(function () {
+        if (location.hash.indexOf('inicio') >= 0 || location.hash === '') { var c = pick(TARJETAS.filter(function (x) { return x.n; })); toast('<strong>¿Te acuerdas?</strong> ' + esc(c.n)); }
+      }, 2500);
     } };
   };
 
@@ -213,57 +274,119 @@
       '<button class="icono-btn" style="background:var(--ground)" data-acc="mes" data-d="1" aria-label="Mes siguiente">' + ic('right', 20) + '</button></div>' +
       '<div class="cal-cab"><span>L</span><span>M</span><span>M</span><span>J</span><span>V</span><span>S</span><span>D</span></div><div class="cal">' + celdas + '</div>' +
       '<div class="leyenda"><span><span class="punto hecho" style="width:12px;height:12px"></span>Estudiaste</span><span><span class="punto hoy" style="width:12px;height:12px;box-shadow:0 0 0 2px var(--ink)"></span>Hoy</span><span><span class="punto falta" style="width:12px;height:12px"></span>Sin repaso</span></div></div>' +
-      '<div class="rejilla"><div class="stat c-mint"><b>' + enMes + '</b><span>días estudiados este mes</span></div><div class="stat c-sky"><b>' + S.stats.tarjetas + '</b><span>tarjetas repasadas en total</span></div></div>' +
+      '<div class="rejilla"><div class="stat c-mint"><b>' + enMes + '</b><span>días estudiados este mes</span></div><div class="stat c-sky"><b>' + S.stats.tarjetas + '</b><span>tarjetas repasadas en total</span></div>' +
+      '<div class="stat c-butter"><b>' + S.stats.juegos + '</b><span>retos respondidos</span></div><div class="stat c-lav"><b>' + S.stats.casos + '</b><span>casos resueltos</span></div></div>' +
       claraDice(nom(msg));
     return { html: html, nav: 'inicio' };
   };
 
-  /* ---------- Módulo ---------- */
-  V.modulo = function (id) {
-    var m = modulo(id); if (!m) return V.inicio();
-    var cs = tarjetasDe(id); var dom = cs.filter(dominada).length;
-    var temas = {}; cs.forEach(function (c) { (temas[c.t] = temas[c.t] || []).push(c); });
-    var lista = Object.keys(temas).map(function (t, i) {
-      return '<details class="tema"><summary><span class="num">' + (i + 1) + '</span><span style="flex:1;display:flex;flex-direction:column;gap:2px"><b style="font-size:15px">' + t + '</b><span class="mini">' + temas[t].length + ' tarjeta' + (temas[t].length > 1 ? 's' : '') + '</span></span>' + ic('right', 18) + '</summary>' +
-        '<div class="qa">' + temas[t].map(function (c) { return '<div><b>' + c.q + '</b>' + c.a + (c.n ? '<br><span class="mini">' + c.n + '</span>' : '') + '<br><span class="mini">Fuente: ' + c.f + '</span></div>'; }).join('') + '</div></details>';
+  /* ---------- Temas agrupados (materia y énfasis) ---------- */
+  function listaTemas(cs, conMateria) {
+    var temas = {}, orden = [];
+    cs.forEach(function (c) { if (!temas[c.t]) { temas[c.t] = []; orden.push(c.t); } temas[c.t].push(c); });
+    return '<div style="display:flex;flex-direction:column;gap:8px">' + orden.map(function (t, i) {
+      return '<details class="tema"><summary><span class="num">' + (i + 1) + '</span><span style="flex:1;display:flex;flex-direction:column;gap:2px"><b style="font-size:15px">' + esc(t) + '</b><span class="mini">' + plural(temas[t].length, 'tarjeta', 'tarjetas') + '</span></span>' + ic('right', 18) + '</summary>' +
+        '<div class="qa">' + temas[t].map(function (c) {
+          return '<div><b>' + esc(c.q) + '</b>' + esc(c.a) + (c.n ? '<br><span class="mini">' + esc(c.n) + '</span>' : '') +
+            '<br><span class="mini">' + (conMateria ? esc(RR.mat[c.mat].nombre) + ' · ' : '') + 'Fuente: ' + esc(c.f) + '</span></div>';
+        }).join('') + '</div></details>';
+    }).join('') + '</div>';
+  }
+  function calcsDe(lista) {
+    if (!lista.length) return '';
+    return '<div class="chips-link">' + lista.map(function (k) {
+      var n = GEN.nombresCalc[k]; return '<a class="chip c-' + n[2] + '" href="#/calc/' + k + '">' + ic('calc', 16) + esc(n[0]) + '</a>';
+    }).join('') + '</div>';
+  }
+
+  /* ---------- Mis materias (pensum depurado) ---------- */
+  function filaMateria(m, destino) {
+    var cs = tarjetasDe('m-' + m.id), mejor = S.mejores[m.id], js = (RR.juegos[m.id] || []).length;
+    var sub = destino === 'juego' ? (mejor != null ? 'Tu mejor puntaje: ' + mejor + '/' + js : js + ' retos sin jugar') : cs.length + ' tarjetas · ' + js + ' juegos' + (mejor != null ? ' · mejor ' + mejor + '/' + js : '');
+    return '<a class="video" href="#/' + (destino || 'materia') + '/' + m.id + '"><span class="mini-ico c-' + m.color + '">' + ic(m.icono, 22) + '</span>' +
+      '<span style="flex:1;display:flex;flex-direction:column;gap:4px;min-width:0"><b style="font-size:14.5px">' + esc(m.nombre) + '</b><span class="mini">' + sub + '</span>' +
+      (destino === 'juego' ? barraProg(mejor != null ? Math.round(mejor / js * 100) : 0, 'gris') : barraProg(pct(cs), 'gris')) + '</span>' + ic('right', 18) + '</a>';
+  }
+  function porPeriodo(fn) {
+    return PERIODOS.map(function (p) {
+      return '<div class="grupo"><h2 class="titulo-p">Periodo ' + p + '</h2>' + MATERIAS.filter(function (m) { return m.periodo === p; }).map(fn).join('') + '</div>';
     }).join('');
-    var html = atras() +
+  }
+  V.pensum = function () {
+    var html = atras() + '<h1 style="font-size:28px">Mis materias</h1>' +
+      claraDice('Dejé las ' + MATERIAS.length + ' materias de tu pensum que más te sirven para el rural. Cada una tiene tarjetas, juegos y videos. La barrita muestra cuánto dominas.', 44) +
+      porPeriodo(function (m) { return filaMateria(m); }) +
+      '<p class="mini">Quedaron por fuera las electivas, el trabajo de grado y las materias de gestión, metodología o comunicación, que no se evalúan en el día a día del rural.</p>';
+    return { html: html, nav: 'inicio' };
+  };
+
+  /* ---------- Materia ---------- */
+  V.materia = function (id) {
+    var m = RR.mat[id]; if (!m) return V.pensum();
+    var cs = tarjetasDe('m-' + id), dom = cs.filter(dominada).length, js = RR.juegos[id] || [], mejor = S.mejores[id];
+    var vids = (window.RR_VIDEOS[id] || []).length;
+    var calcs = []; js.forEach(function (g) { if (g.tipo === 'c' && calcs.indexOf(g.calc) < 0) calcs.push(g.calc); });
+    var html = atras('#/pensum', 'Mis materias') +
       '<div class="cabecera-mod c-' + m.color + '"><span style="width:40px;height:40px;border-radius:14px;background:rgba(255,255,255,.7);display:flex;align-items:center;justify-content:center">' + ic(m.icono, 22) + '</span>' +
-      '<h1 style="font-size:25px;line-height:1.1">' + m.nombre + '</h1><p style="font-size:14px;color:var(--soft);font-weight:600">' + dom + ' de ' + cs.length + ' tarjetas dominadas</p></div>' +
-      '<div class="fila" style="flex-wrap:wrap"><a class="btn" href="#/tarjetas/' + id + '">' + ic('cards', 20) + 'Repasar tarjetas</a>' +
-      (m.juego || id === 'proc' ? '<a class="btn suave" href="#/juego">' + ic('game', 20) + 'Jugar</a>' : '') +
-      '<a class="btn suave" href="#/videos/' + id + '">' + ic('play', 20) + 'Videos</a></div>' +
-      claraDice('Toca un tema para leer sus tarjetas, jefe ' + esc(S.nombre) + '. Cuando te sientas lista, repásalas para que se te queden.', 44) +
-      '<div style="display:flex;flex-direction:column;gap:8px">' + lista + '</div>';
+      '<p class="sobre">Periodo ' + m.periodo + '</p><h1 style="font-size:25px;line-height:1.1">' + esc(m.nombre) + '</h1>' +
+      '<p style="font-size:14px;color:var(--soft);font-weight:600">' + dom + ' de ' + cs.length + ' tarjetas dominadas</p>' + barraProg(pct(cs)) + '</div>' +
+      '<div class="acciones">' +
+      '<a class="accion" href="#/tarjetas/m-' + id + '">' + ic('cards', 22) + '<b>Tarjetas</b><span>' + cs.length + ' para repasar</span></a>' +
+      '<a class="accion" href="#/juego/' + id + '">' + ic('game', 22) + '<b>Juegos</b><span>' + (mejor != null ? 'Mejor: ' + mejor + '/' + js.length : js.length + ' retos') + '</span></a>' +
+      '<a class="accion" href="#/videos/' + id + '">' + ic('play', 22) + '<b>Videos</b><span>' + plural(vids, 'video', 'videos') + '</span></a></div>' +
+      (calcs.length ? '<div class="grupo"><p class="chico">Calculadoras de esta materia</p>' + calcsDe(calcs) + '</div>' : '') +
+      claraDice('Toca un tema para leer sus tarjetas, jefe ' + esc(S.nombre) + '. Luego repásalas o ponte a prueba con los juegos.', 44) +
+      listaTemas(cs, false) +
+      '<p class="mini">Fuentes sugeridas: ' + esc(m.f) + '. Valida siempre con la guía vigente, el protocolo de tu institución y tus docentes.</p>';
+    return { html: html, nav: 'inicio' };
+  };
+
+  /* ---------- Énfasis para el rural ---------- */
+  V.enfasis = function (id) {
+    var e = RR.enf[id]; if (!e) return V.inicio();
+    var cs = tarjetasDe('e-' + id), dom = cs.filter(dominada).length;
+    var mats = []; cs.forEach(function (c) { if (mats.indexOf(c.mat) < 0) mats.push(c.mat); });
+    var html = atras() +
+      '<div class="cabecera-mod c-' + e.color + '"><span style="width:40px;height:40px;border-radius:14px;background:rgba(255,255,255,.7);display:flex;align-items:center;justify-content:center">' + ic(e.icono, 22) + '</span>' +
+      '<p class="sobre">Énfasis para el rural</p><h1 style="font-size:25px;line-height:1.1">' + esc(e.nombre) + '</h1>' +
+      '<p style="font-size:14px;color:var(--soft);font-weight:600">' + dom + ' de ' + cs.length + ' tarjetas dominadas</p>' + barraProg(pct(cs)) + '</div>' +
+      '<a class="btn" href="#/tarjetas/e-' + id + '">' + ic('cards', 20) + 'Repasar estas tarjetas</a>' +
+      '<div class="grupo"><p class="chico">Practica con calculadoras</p>' + calcsDe(e.calcs || []) + '</div>' +
+      '<div class="grupo"><p class="chico">Materias relacionadas</p><div class="chips-link">' + mats.map(function (k) {
+        var m = RR.mat[k]; return '<a class="chip c-' + m.color + '" href="#/materia/' + k + '">' + ic(m.icono, 16) + esc(m.nombre) + '</a>';
+      }).join('') + '</div></div>' +
+      listaTemas(cs, true);
     return { html: html, nav: 'inicio' };
   };
 
   /* ---------- Tarjetas ---------- */
-  function nuevaSesion(mod, libre) {
+  function nuevaSesion(cl, libre) {
     var cola;
-    if (libre) cola = mezclar(tarjetasDe(mod)).slice(0, 20).map(function (c) { return c.id; });
-    else cola = vencidas(mod).map(function (c) { return c.id; }).concat(nuevas(mod).slice(0, cupoNuevas()).map(function (c) { return c.id; }));
-    mem.sesion = { mod: mod || '', libre: !!libre, cola: cola, i: 0, mostrada: false, pista: false, hechas: 0, total: cola.length };
+    if (libre) cola = mezclar(tarjetasDe(cl)).slice(0, 20).map(function (c) { return c.id; });
+    else cola = vencidas(cl).map(function (c) { return c.id; }).concat(nuevas(cl).slice(0, cupoNuevas()).map(function (c) { return c.id; }));
+    mem.sesion = { cl: cl, libre: !!libre, cola: cola, i: 0, mostrada: false, pista: false, hechas: 0, total: cola.length };
   }
-  V.tarjetas = function (mod) {
-    mod = mod || '';
-    if (!mem.sesion || mem.sesion.mod !== mod) nuevaSesion(mod);
-    var s = mem.sesion; var m = modulo(mod);
-    var volver = mod ? atras('#/modulo/' + mod, m ? m.nombre : 'Módulo') : atras();
+  V.tarjetas = function (param) {
+    var cl = clave(param);
+    if (!mem.sesion || mem.sesion.cl !== cl) nuevaSesion(cl);
+    var s = mem.sesion;
+    var volver = cl ? atras(hrefDe(cl), nombreDe(cl)) : atras();
     if (!s.cola.length || s.i >= s.cola.length) {
       var hubo = s.hechas > 0;
-      return { html: volver + (hubo ? claraDice('<strong>¡Listo por hoy, jefe ' + esc(S.nombre) + '!</strong> Repasaste ' + s.hechas + ' tarjeta' + (s.hechas > 1 ? 's' : '') + '. Las difíciles te las traigo antes y las fáciles dentro de unos días.', 56)
-        : claraDice('<strong>¡Estás al día, jefe ' + esc(S.nombre) + '!</strong> No tienes tarjetas pendientes' + (m ? ' en este módulo' : '') + '. Si quieres, hacemos un repaso libre.', 56)) +
-        '<div class="fila" style="flex-wrap:wrap;padding-left:66px"><button class="btn claro" data-acc="libre">Repaso libre</button><a class="btn" href="#/juego">Ir al reto ' + ic('right', 18) + '</a></div>', nav: 'tarjetas' };
+      var juego = cl && cl.charAt(0) === 'm' ? '#/juego/' + cl.slice(2) : '#/juegos';
+      return { html: volver + (hubo ? claraDice('<strong>¡Listo por hoy, jefe ' + esc(S.nombre) + '!</strong> Repasaste ' + plural(s.hechas, 'tarjeta', 'tarjetas') + '. Las difíciles te las traigo antes y las fáciles dentro de unos días.', 56)
+        : claraDice('<strong>¡Estás al día, jefe ' + esc(S.nombre) + '!</strong> No tienes tarjetas pendientes' + (cl ? ' en ' + esc(nombreDe(cl)) : '') + '. Si quieres, hacemos un repaso libre.', 56)) +
+        '<div class="fila" style="flex-wrap:wrap;padding-left:66px"><button class="btn claro" data-acc="libre">Repaso libre</button><a class="btn" href="' + juego + '">Ir a los juegos ' + ic('right', 18) + '</a></div>' +
+        (cl ? '' : '<a class="fila-link" href="#/pensum"><span class="t">Repasar una materia</span>' + ic('right', 20) + '</a>'), nav: 'tarjetas' };
     }
-    var c = TARJETAS.filter(function (x) { return x.id === s.cola[s.i]; })[0];
+    var c = TID[s.cola[s.i]];
     var st = S.srs[c.id];
-    var pct = Math.round(s.i / s.total * 100);
+    var p = Math.round(s.i / s.total * 100);
     var html = '<div class="fila entre">' + volver + '<span class="chico">' + Math.min(s.i + 1, s.total) + ' / ' + s.total + (s.libre ? ' · libre' : '') + '</span></div>' +
-      '<div class="barra" role="progressbar" aria-valuenow="' + pct + '" aria-valuemin="0" aria-valuemax="100" aria-label="Progreso del repaso"><span style="width:' + Math.max(pct, 3) + '%"></span></div>' +
-      '<div class="flash"><div class="banda">' + modulo(c.m).nombre + ' · ' + c.t + '</div><div class="cuerpo"><h1>' + c.q + '</h1>' +
-      (s.mostrada ? '<div class="respuesta pop"><p class="a">' + c.a + '</p>' + (c.n ? '<p class="n">' + c.n + '</p>' : '') + '<p class="mini">Fuente: ' + c.f + '</p></div>' : '') + '</div></div>' +
-      (s.pista && !s.mostrada ? claraDice('<strong>Pista:</strong> ' + c.h, 44) : '');
+      '<div class="barra" role="progressbar" aria-valuenow="' + p + '" aria-valuemin="0" aria-valuemax="100" aria-label="Progreso del repaso"><span style="width:' + Math.max(p, 3) + '%"></span></div>' +
+      '<div class="flash"><div class="banda">' + esc(RR.mat[c.mat].nombre) + ' · ' + esc(c.t) + '</div><div class="cuerpo"><h1>' + esc(c.q) + '</h1>' +
+      (s.mostrada ? '<div class="respuesta pop"><p class="a">' + esc(c.a) + '</p>' + (c.n ? '<p class="n">' + esc(c.n) + '</p>' : '') + '<p class="mini">Fuente: ' + esc(c.f) + '</p></div>' : '') + '</div></div>' +
+      (s.pista && !s.mostrada ? claraDice('<strong>Pista:</strong> ' + esc(c.h || 'piensa en lo esencial del tema.'), 44) : '');
     if (!s.mostrada) {
       html += '<div class="fila"><button class="btn suave" data-acc="pista" style="padding:0 14px 0 8px">' + clara(38, false) + 'Pista</button><button class="btn" data-acc="mostrar" style="flex:1">Mostrar respuesta</button></div>';
     } else {
@@ -275,92 +398,207 @@
     return { html: html, nav: 'tarjetas' };
   };
 
-  /* ---------- Juegos ---------- */
-  V.juego = function () {
-    if (!mem.juego) mem.juego = window.RR_GEN.juego(S.vistosJuego);
-    var j = mem.juego; var resp = j.respondida;
-    var etq = j.etiquetas || ['Ingresos', 'Egresos'];
-    function lista(arr) { return arr.map(function (x) { return '<span>' + x[0] + ': ' + (typeof x[1] === 'number' ? x[1].toLocaleString('es-CO') + (j.tipo === 'goteo' && x[0] === 'Factor' ? '' : ' ml') : x[1]) + '</span>'; }).join(''); }
-    var html = '<div class="fila entre">' + atras() + '<span class="etq c-sky" style="color:var(--sky-ink)">' + j.tema + '</span></div>' +
-      '<h1 style="font-size:26px;line-height:1.1">' + j.titulo + '</h1>' + claraDice(nom(j.intro), 44) +
-      '<div class="tarjeta-blanca" style="display:flex;flex-direction:column;gap:12px"><p style="font-size:14.5px;line-height:1.45">' + j.enunciado + '</p>' +
-      '<div class="datos"><div class="caja-dato c-sky"><span class="k" style="color:var(--sky-ink)">' + etq[0] + '</span>' + lista(j.ingresos) + '</div>' +
-      '<div class="caja-dato c-peach"><span class="k" style="color:var(--peach-ink)">' + etq[1] + '</span>' + lista(j.egresos) + '</div></div></div>' +
-      '<div class="opciones" role="group" aria-label="Opciones de respuesta" style="grid-template-columns:repeat(2,minmax(0,1fr))">' + j.opciones.map(function (o, i) {
-        var cls = resp ? (o.ok ? 'ok' : (i === j.elegida ? 'mal' : 'apagada')) : '';
-        return '<button class="opcion ' + cls + '" data-acc="respJuego" data-i="' + i + '"' + (resp ? ' disabled' : '') + '>' + o.t + '</button>';
-      }).join('') + '</div>';
-    if (resp) {
-      var bien = j.opciones[j.elegida].ok;
-      html += claraDice('<strong>' + (bien ? '¡Eso, jefe ' + esc(S.nombre) + '!' : nom(pick(window.RR_CLARA.fallo))) + '</strong><br>' + j.solucion.join('<br>'), 44) +
-        '<button class="btn" data-acc="otroJuego" style="align-self:flex-end">Siguiente reto ' + ic('right', 18) + '</button>';
+  /* ---------- Juegos: centro de juegos ---------- */
+  V.juegos = function () {
+    var calcs = Object.keys(GEN.nombresCalc).map(function (k) {
+      var n = GEN.nombresCalc[k];
+      return '<a class="calc-tile c-' + n[2] + '" href="#/calc/' + k + '"><span class="ico">' + ic(n[1], 18) + '</span><span>' + esc(n[0]) + '</span></a>';
+    }).join('');
+    var mix = S.mejores.mix;
+    var html = '<h1 style="font-size:28px">Juegos</h1>' +
+      claraDice('Cada materia tiene 20 retos: opción múltiple, verdadero o falso, parejas y ordenar pasos. Las calculadoras te dan un ejercicio nuevo cada vez.', 44) +
+      '<a class="hoy-card" href="#/juego/mix" style="text-decoration:none"><span class="circulo" aria-hidden="true"></span><p class="sobre">Reto mixto</p>' +
+      '<h2 style="font-size:22px;line-height:1.15">20 preguntas de todas tus materias</h2><p style="font-size:14px;color:var(--soft)">' + (mix != null ? 'Tu mejor puntaje: ' + mix + '/20' : 'Ideal para un repaso general rápido.') + '</p>' +
+      '<span class="btn" style="align-self:flex-start;min-height:46px">' + ic('shuffle', 18) + 'Jugar</span></a>' +
+      '<h2 class="titulo-sec">Calculadoras</h2><div class="calc-grid">' + calcs + '</div>' +
+      '<h2 class="titulo-sec">Por materia</h2>' + porPeriodo(function (m) { return filaMateria(m, 'juego'); });
+    return { html: html, nav: 'juegos' };
+  };
+
+  /* ---------- Juegos: partida de 20 retos ---------- */
+  var TIPO_TXT = { o: 'Opción múltiple', v: 'Verdadero o falso', p: 'Une las parejas', s: 'Ordena los pasos', c: 'Calculadora' };
+  function nuevaPartida(id) {
+    var pool = [];
+    if (id === 'mix') Object.keys(RR.juegos).forEach(function (k) { pool = pool.concat(RR.juegos[k]); });
+    else pool = RR.juegos[id];
+    mem.partida = { id: id, cola: mezclar(pool).slice(0, PREGUNTAS_POR_PARTIDA), i: 0, puntos: 0, item: null, guardado: false };
+  }
+  function preparar(p) {
+    if (p.item && p.item.idx === p.i) return p.item;
+    var g = p.cola[p.i], it = { idx: p.i, g: g, tipo: g.tipo, listo: false, bien: false, errores: 0, malo: null };
+    if (g.tipo === 'o') it.ops = mezclar(g.ops.map(function (t, k) { return { t: t, ok: k === g.ok }; }));
+    else if (g.tipo === 'v') it.ops = [{ t: 'Verdadero', ok: g.v === true }, { t: 'Falso', ok: g.v === false }];
+    else if (g.tipo === 'c') { it.c = GEN.calc[g.calc](S.vistosJuego); it.ops = it.c.opciones; }
+    else if (g.tipo === 'p') { it.der = mezclarDistinto(g.pares.map(function (x, k) { return k; })); it.hechos = {}; it.sel = null; it.selD = null; }
+    else if (g.tipo === 's') { it.orden = mezclarDistinto(g.pasos.map(function (x, k) { return k; })); it.colocados = []; }
+    p.item = it;
+    return it;
+  }
+  function cortas(ops) { return ops.every(function (o) { return String(o.t).length <= 18; }); }
+  function bloqueOpciones(ops, estado, accion) {
+    var clase = ops.length === 2 ? ' vf' : (cortas(ops) ? ' dos' : '');
+    return '<div class="opciones' + clase + '" role="group" aria-label="Opciones de respuesta">' + ops.map(function (o, k) {
+      var cls = estado.listo ? (o.ok ? 'ok' : (k === estado.elegida ? 'mal' : 'apagada')) : '';
+      return '<button class="opcion ' + cls + '" data-acc="' + accion + '" data-i="' + k + '"' + (estado.listo ? ' disabled' : '') + '>' + esc(o.t) + '</button>';
+    }).join('') + '</div>';
+  }
+  function bloqueCalc(c) {
+    return '<h2 style="font-size:21px;line-height:1.15">' + esc(c.titulo) + '</h2>' + claraDice(nom(esc(c.intro)), 40) +
+      '<div class="tarjeta-blanca" style="display:flex;flex-direction:column;gap:12px"><p style="font-size:14.5px;line-height:1.45">' + esc(c.enunciado) + '</p>' +
+      '<div class="cajas">' + c.cajas.map(function (b) {
+        return '<div class="caja-dato c-' + b.c + '"><span class="k">' + esc(b.k) + '</span>' + b.items.map(function (x) { return '<span class="it"><span>' + esc(x[0]) + '</span><b>' + esc(x[1]) + '</b></span>'; }).join('') + '</div>';
+      }).join('') + '</div><p style="font-weight:800;font-size:15.5px">' + esc(c.pregunta) + '</p></div>';
+  }
+  function solucionCalc(c) { return c.solucion.map(esc).join('<br>') + (c.nota ? '<br><span class="mini">' + esc(c.nota) + '</span>' : ''); }
+  function feedbackItem(it) {
+    var g = it.g, cuerpo;
+    if (g.tipo === 'c') cuerpo = solucionCalc(it.c);
+    else if (g.tipo === 'v') cuerpo = '<b>' + (g.v ? 'Es verdadero.' : 'Es falso.') + '</b> ' + esc(g.exp || '');
+    else if (g.tipo === 'p') cuerpo = it.bien ? 'Uniste todas las parejas sin errores.' : 'Las uniste con ' + plural(it.errores, 'error', 'errores') + '. Para sumar el punto hay que hacerlo sin errores.';
+    else if (g.tipo === 's') cuerpo = (it.bien ? '' : 'Tuviste ' + plural(it.errores, 'error', 'errores') + '; el orden correcto quedó arriba. ') + esc(g.exp || '');
+    else cuerpo = esc(g.exp || '');
+    var titulo = nom(esc(pick(it.bien ? CLARA.bien : CLARA.fallo)));
+    return '<div class="feedback">' + claraDice('<strong>' + titulo + '</strong>' + (cuerpo ? '<br>' + cuerpo : ''), 44) + '</div>';
+  }
+  function terminarItem(it, bien) {
+    it.listo = true; it.bien = bien;
+    if (bien) mem.partida.puntos++;
+    S.stats.juegos++; marcarEstudio(); guardar();
+  }
+  function finPartida(p) {
+    var total = p.cola.length, pts = p.puntos, id = p.id;
+    if (!p.guardado) {
+      p.guardado = true; var prev = S.mejores[id];
+      p.record = prev != null && pts > prev;
+      if (prev == null || pts > prev) S.mejores[id] = pts;
+      guardar();
     }
-    return { html: html, nav: 'juego' };
+    var r = pts / total;
+    var msg = r >= 0.9 ? '¡Impresionante, jefe {n}! Esta materia ya es tuya.' : (r >= 0.7 ? '¡Muy bien, jefe {n}! Repasa las que fallaste y vas por el puntaje perfecto.' :
+      (r >= 0.5 ? 'Vas bien, jefe {n}. Un repaso de tarjetas y lo vuelves a intentar.' : 'Esta materia necesita repaso, jefe {n}. Empecemos por las tarjetas y luego volvemos.'));
+    var volver = id === 'mix' ? atras('#/juegos', 'Juegos') : atras('#/materia/' + id, RR.mat[id].nombre);
+    var html = volver + '<div class="resultado c-lav"><span class="sobre">' + (id === 'mix' ? 'Reto mixto' : esc(RR.mat[id].nombre)) + '</span><b class="grande">' + pts + ' / ' + total + '</b>' +
+      '<span style="font-weight:700;color:var(--soft)">' + (p.record ? '¡Nuevo récord!' : 'Tu mejor puntaje: ' + S.mejores[id] + '/' + total) + '</span></div>' +
+      claraDice(nom(msg), 52) +
+      '<div class="fila" style="flex-wrap:wrap"><button class="btn" data-acc="otraPartida">' + ic('shuffle', 18) + 'Jugar otra vez</button>' +
+      (id === 'mix' ? '<a class="btn suave" href="#/juegos">Más juegos</a>' : '<a class="btn suave" href="#/tarjetas/m-' + id + '">' + ic('cards', 18) + 'Repasar tarjetas</a>') + '</div>';
+    return { html: html, nav: 'juegos' };
+  }
+  V.juego = function (id) {
+    if (!id || (id !== 'mix' && !RR.juegos[id])) return V.juegos();
+    if (!mem.partida || mem.partida.id !== id) nuevaPartida(id);
+    var p = mem.partida;
+    if (p.i >= p.cola.length) return finPartida(p);
+    var it = preparar(p), g = it.g;
+    var volver = id === 'mix' ? atras('#/juegos', 'Juegos') : atras('#/materia/' + id, RR.mat[id].nombre);
+    var avance = Math.round(p.i / p.cola.length * 100);
+    var html = '<div class="fila entre">' + volver + '<span class="marcador" aria-label="Puntaje">' + ic('star', 16) + p.puntos + ' / ' + p.cola.length + '</span></div>' +
+      '<div class="barra" role="progressbar" aria-valuenow="' + avance + '" aria-valuemin="0" aria-valuemax="100" aria-label="Avance del juego"><span style="width:' + Math.max(avance, 3) + '%"></span></div>' +
+      '<p class="chico">' + (id === 'mix' ? esc(RR.mat[g.mat].nombre) + ' · ' : '') + 'Reto ' + (p.i + 1) + ' de ' + p.cola.length + ' · ' + TIPO_TXT[g.tipo] + '</p>';
+    if (g.tipo === 'o' || g.tipo === 'v') {
+      html += '<div class="tarjeta-blanca"><h1 class="preg">' + esc(g.q) + '</h1></div>' + bloqueOpciones(it.ops, it, 'responder');
+    } else if (g.tipo === 'c') {
+      html += bloqueCalc(it.c) + bloqueOpciones(it.ops, it, 'responder');
+    } else if (g.tipo === 'p') {
+      var malo = it.malo || {};
+      html += '<div class="tarjeta-blanca"><h1 class="preg">' + esc(g.q) + '</h1><p class="mini" style="margin-top:6px">Toca un elemento de cada columna para unirlos.</p></div>' +
+        '<div class="parejas"><div class="col">' + g.pares.map(function (par, k) {
+          var hecho = !!it.hechos[k], cls = hecho ? 'ok' : (it.sel === k ? 'sel' : (malo.i === k ? 'mal' : ''));
+          return '<button class="pz ' + cls + '" data-acc="parIzq" data-k="' + k + '"' + (hecho || it.listo ? ' disabled' : '') + (it.sel === k ? ' aria-pressed="true"' : '') + '>' + esc(par[0]) + '</button>';
+        }).join('') + '</div><div class="col">' + it.der.map(function (k) {
+          var hecho = !!it.hechos[k], cls = hecho ? 'ok' : (it.selD === k ? 'sel' : (malo.d === k ? 'mal' : ''));
+          return '<button class="pz der ' + cls + '" data-acc="parDer" data-k="' + k + '"' + (hecho || it.listo ? ' disabled' : '') + (it.selD === k ? ' aria-pressed="true"' : '') + '>' + esc(g.pares[k][1]) + '</button>';
+        }).join('') + '</div></div>';
+    } else if (g.tipo === 's') {
+      var quedan = it.orden.filter(function (k) { return it.colocados.indexOf(k) < 0; });
+      html += '<div class="tarjeta-blanca"><h1 class="preg">' + esc(g.q) + '</h1></div>' +
+        (it.colocados.length ? '<ol class="orden">' + it.colocados.map(function (k, n) { return '<li class="paso pop"><span class="n">' + (n + 1) + '</span><span>' + esc(g.pasos[k]) + '</span></li>'; }).join('') + '</ol>' : '') +
+        (quedan.length ? '<p class="chico">' + (it.colocados.length ? 'Toca el paso que sigue:' : 'Toca el primer paso:') + '</p><div class="pasos">' + quedan.map(function (k) {
+          return '<button class="pz' + (it.malo === k ? ' mal' : '') + '" data-acc="paso" data-k="' + k + '">' + esc(g.pasos[k]) + '</button>';
+        }).join('') + '</div>' : '');
+    }
+    if (it.listo) {
+      html += feedbackItem(it) + '<button class="btn" data-acc="siguiente" style="align-self:flex-end">' + (p.i + 1 < p.cola.length ? 'Siguiente reto ' : 'Ver mi resultado ') + ic('right', 18) + '</button>';
+    }
+    return { html: html, nav: 'juegos' };
+  };
+
+  /* ---------- Calculadoras sueltas ---------- */
+  V.calc = function (tipo) {
+    if (!GEN.calc[tipo]) return V.juegos();
+    if (!mem.calc || mem.calc.tipo !== tipo) mem.calc = { tipo: tipo, c: GEN.calc[tipo](S.vistosJuego), listo: false, elegida: -1, n: 1 };
+    var x = mem.calc, c = x.c;
+    var html = '<div class="fila entre">' + atras('#/juegos', 'Juegos') + '<span class="etq c-sky" style="color:var(--sky-ink)">' + esc(c.tema) + '</span></div>' +
+      bloqueCalc(c) + bloqueOpciones(c.opciones, x, 'respCalc');
+    if (x.listo) {
+      var bien = c.opciones[x.elegida].ok;
+      html += '<div class="feedback">' + claraDice('<strong>' + nom(esc(pick(bien ? CLARA.bien : CLARA.fallo))) + '</strong><br>' + solucionCalc(c), 44) + '</div>' +
+        '<button class="btn" data-acc="otroCalc" style="align-self:flex-end">Otro ejercicio ' + ic('right', 18) + '</button>';
+    }
+    return { html: html, nav: 'juegos' };
   };
 
   /* ---------- Casos (chat con Clara) ---------- */
   V.caso = function () {
-    if (!mem.caso) mem.caso = window.RR_GEN.caso(S.vistosCaso);
+    if (!mem.caso) mem.caso = GEN.caso(S.vistosCaso);
     var c = mem.caso; var resp = c.respondida;
-    var msgs = c.mensajes.map(function (t, i) { return '<div class="msg pop d' + Math.min(i, 3) + '">' + nom(t) + '</div>'; }).join('') +
-      '<div class="msg pop d2 chips">' + c.datos.map(function (d) { return '<span class="etq ' + d.tono + '">' + d.t + '</span>'; }).join('') + '</div>' +
-      '<div class="msg pop d3"><strong>' + c.pregunta + '</strong></div>';
-    var cuerpo = msgs;
+    var cuerpo = c.mensajes.map(function (t, i) { return '<div class="msg pop d' + Math.min(i, 3) + '">' + nom(esc(t)) + '</div>'; }).join('') +
+      '<div class="msg pop d2 chips">' + c.datos.map(function (d) { return '<span class="etq ' + d.tono + '">' + esc(d.t) + '</span>'; }).join('') + '</div>' +
+      '<div class="msg pop d3"><strong>' + esc(c.pregunta) + '</strong></div>';
     if (!resp) {
       cuerpo += '<div class="opciones" role="group" aria-label="Opciones de respuesta" style="padding-left:24px;margin-top:4px">' + c.opciones.map(function (o, i) {
-        return '<button class="opcion" style="min-height:48px;font-size:14px" data-acc="respCaso" data-i="' + i + '">' + o.t + '</button>';
+        return '<button class="opcion" style="min-height:48px;font-size:14px" data-acc="respCaso" data-i="' + i + '">' + esc(o.t) + '</button>';
       }).join('') + '</div>';
     } else {
       var o = c.opciones[c.elegida];
-      cuerpo += '<div class="msg yo pop">' + o.t + '</div>' +
-        '<div class="msg pop d1"><strong>' + (o.ok ? '¡Exacto, jefe ' + esc(S.nombre) + '!' : 'Esa no, jefe ' + esc(S.nombre) + '.') + '</strong> ' + c.explicacion + '</div>' +
-        '<div class="msg pop d2"><strong>¿Qué haces?</strong> ' + c.conducta + '</div>' +
+      cuerpo += '<div class="msg yo pop">' + esc(o.t) + '</div>' +
+        '<div class="msg pop d1"><strong>' + (o.ok ? '¡Exacto, jefe ' + esc(S.nombre) + '!' : 'Esa no, jefe ' + esc(S.nombre) + '.') + '</strong> ' + esc(c.explicacion) + '</div>' +
+        '<div class="msg pop d2"><strong>¿Qué haces?</strong> ' + esc(c.conducta) + '</div>' +
         '<button class="btn claro" data-acc="otroCaso" style="align-self:flex-start;min-height:44px;margin-top:4px">Plantéame otro caso</button>';
     }
     var html = '<div class="chat-cab"><a href="#/inicio" aria-label="Volver al inicio" class="icono-btn" style="background:transparent;margin-left:-10px">' + ic('left', 22) + '</a>' + clara(40) +
-      '<span style="flex:1;display:flex;flex-direction:column"><b style="font-size:15px">Clara</b><span style="font-size:12px;color:var(--ok);font-weight:700">Caso nuevo · ' + c.tema.split(' · ')[0] + '</span></span></div><div class="chat">' + cuerpo + '</div>';
+      '<span style="flex:1;display:flex;flex-direction:column"><b style="font-size:15px">Clara</b><span style="font-size:12px;color:var(--ok);font-weight:700">Caso nuevo · ' + esc(c.tema.split(' · ')[0]) + '</span></span></div><div class="chat">' + cuerpo + '</div>';
     return { html: html, nav: 'caso', sinPad: true };
   };
 
   /* ---------- Videos ---------- */
-  V.videos = function (mod) {
-    if (mod !== undefined) mem.filtroVideo = mod || '';
-    var f = mem.filtroVideo;
-    var mods = MODULOS.filter(function (m) { return window.RR_VIDEOS.some(function (v) { return v.m === m.id; }); });
-    var filtros = '<button class="filtro" data-acc="filtroVideo" data-m="" aria-pressed="' + (!f) + '">Todos</button>' + mods.map(function (m) {
-      return '<button class="filtro" data-acc="filtroVideo" data-m="' + m.id + '" aria-pressed="' + (f === m.id) + '">' + m.nombre + '</button>';
+  function selectorMaterias(actual) {
+    return '<label class="oculto" for="sel-mat">Materia</label><select id="sel-mat" class="campo selector" data-cambio="videos"><option value="">Elige una materia…</option>' +
+      PERIODOS.map(function (p) {
+        return '<optgroup label="Periodo ' + p + '">' + MATERIAS.filter(function (m) { return m.periodo === p; }).map(function (m) {
+          return '<option value="' + m.id + '"' + (m.id === actual ? ' selected' : '') + '>' + esc(m.nombre) + '</option>';
+        }).join('') + '</optgroup>';
+      }).join('') + '</select>';
+  }
+  V.videos = function (id) {
+    var VID = window.RR_VIDEOS || {}, m = id && RR.mat[id];
+    var canales = (window.RR_CANALES || []).map(function (c) {
+      return '<a class="canal" href="' + (c.url || ytBuscar(c.q)) + '" target="_blank" rel="noopener"><span class="lang"' + (c.lang === 'ES' ? ' style="background:var(--mint);color:var(--ok)"' : '') + '>' + (c.lang === 'ES' ? 'Español' : 'Inglés') + '</span><b>' + esc(c.nombre) + '</b><span class="mini">' + esc(c.foco) + '</span></a>';
     }).join('');
-    var lista = window.RR_VIDEOS.filter(function (v) { return !f || v.m === f; }).map(function (v) {
-      var m = modulo(v.m);
-      return '<a class="video" href="' + v.url + '" target="_blank" rel="noopener"><span class="mini-ico c-' + m.color + '">' + ic(m.icono, 22) + '</span>' +
-        '<span style="flex:1;display:flex;flex-direction:column;gap:2px"><b style="font-size:15px">' + v.titulo + '</b><span class="mini">' + m.nombre + ' · buscar en YouTube</span></span>' + ic('ext', 18) + '</a>';
-    }).join('');
-    var canales = window.RR_CANALES.map(function (c) {
-      return '<a class="canal" href="' + c.url + '" target="_blank" rel="noopener"><span class="lang"' + (c.lang === 'ES' ? ' style="background:var(--mint);color:var(--ok)"' : '') + '>' + (c.lang === 'ES' ? 'Español' : 'Inglés') + '</span><b>' + c.nombre + '</b><span class="mini">' + c.foco + '</span></a>';
-    }).join('');
-    var html = '<h1 style="font-size:28px">Videos</h1>' +
-      claraDice('Mira el video, jefe ' + esc(S.nombre) + ', y luego repasa las tarjetas del tema para que no se te olvide.', 44) +
-      '<div class="filtros">' + filtros + '</div>' +
-      '<div style="display:flex;flex-direction:column;gap:8px">' + lista + '</div>' +
-      (f ? '<a class="btn claro" href="#/tarjetas/' + f + '">' + ic('cards', 20) + 'Repasar tarjetas de este tema</a>' : '') +
-      '<h2 class="titulo-sec">Canales recomendados</h2><div class="carrusel">' + canales + '</div>' +
-      '<p class="mini">Muchos canales en español son de España: sirven para técnicas, pero las normas colombianas se revisan en las guías del MinSalud.</p>';
-    return { html: html, nav: 'videos' };
-  };
-
-  /* ---------- Pensum ---------- */
-  V.pensum = function () {
-    var html = atras() + '<h1 style="font-size:28px">Todo el pensum</h1>' +
-      claraDice('Aquí está tu malla completa. Las materias con módulos ya tienen tarjetas; las demás las vamos llenando por tandas.', 44) +
-      window.RR_PENSUM.map(function (p) {
-        return '<div style="display:flex;flex-direction:column;gap:8px"><h2 style="font-size:17px">Periodo ' + p.periodo + '</h2>' + p.materias.map(function (mt) {
-          var n = mt[1].reduce(function (a, id) { return a + tarjetasDe(id).length; }, 0);
-          var dest = mt[1].length ? '#/modulo/' + mt[1][0] : null;
-          var inner = '<span style="flex:1;display:flex;flex-direction:column;gap:2px"><b style="font-size:14.5px">' + mt[0] + '</b><span class="mini">' + (n ? n + ' tarjetas relacionadas' : 'Contenido en preparación') + '</span></span>';
-          return dest ? '<a class="video" href="' + dest + '">' + inner + ic('right', 18) + '</a>' : '<div class="video" style="opacity:.75">' + inner + '</div>';
-        }).join('') + '</div>';
+    var html;
+    if (!m) {
+      html = '<h1 style="font-size:28px">Videos</h1>' +
+        claraDice('Elige una materia y te muestro videos, casi todos en español. Después de verlos, repasa las tarjetas del tema para que no se te olviden.', 44) +
+        selectorMaterias('') +
+        '<div class="chips-link">' + MATERIAS.map(function (x) {
+          return '<a class="chip c-' + x.color + '" href="#/videos/' + x.id + '">' + ic(x.icono, 16) + esc(x.nombre) + ' <span class="cuenta">' + (VID[x.id] || []).length + '</span></a>';
+        }).join('') + '</div>' +
+        '<h2 class="titulo-sec">Canales recomendados</h2><div class="carrusel">' + canales + '</div>' +
+        '<p class="mini">Muchos canales en español son de España: sirven para técnicas, pero las normas colombianas se revisan en las guías del MinSalud.</p>';
+    } else {
+      var lista = (VID[id] || []).map(function (v) {
+        return '<a class="video" href="' + yt(v[1]) + '" target="_blank" rel="noopener"><span class="mini-ico c-' + m.color + '">' + ic('play', 22) + '</span>' +
+          '<span style="flex:1;display:flex;flex-direction:column;gap:2px;min-width:0"><b style="font-size:15px">' + esc(v[0]) + '</b><span class="mini">YouTube' + (v[2] === 'EN' ? ' · en inglés' : '') + '</span></span>' + ic('ext', 18) + '</a>';
       }).join('');
-    return { html: html, nav: 'inicio' };
+      var q = (window.RR_BUSCAR || {})[id] || m.nombre;
+      html = atras('#/videos', 'Todas las materias') + '<h1 style="font-size:26px;line-height:1.1">' + esc(m.nombre) + '</h1>' + selectorMaterias(id) +
+        '<div style="display:flex;flex-direction:column;gap:8px">' + lista +
+        '<a class="video" href="' + ytBuscar(q) + '" target="_blank" rel="noopener"><span class="mini-ico" style="background:#fff;border:1.5px dashed var(--line2)">' + ic('search', 22) + '</span>' +
+        '<span style="flex:1;display:flex;flex-direction:column;gap:2px;min-width:0"><b style="font-size:15px">Buscar más videos</b><span class="mini">«' + esc(q) + '»</span></span>' + ic('ext', 18) + '</a></div>' +
+        '<a class="btn claro" href="#/tarjetas/m-' + id + '">' + ic('cards', 20) + 'Repasar tarjetas de esta materia</a>' +
+        '<p class="mini">Son videos públicos de YouTube. Si alguno ya no está disponible, usa «Buscar más videos».</p>';
+    }
+    return { html: html, nav: 'videos' };
   };
 
   /* ---------- Ajustes ---------- */
@@ -368,18 +606,23 @@
     var html = atras() + '<h1 style="font-size:28px">Ajustes</h1>' +
       '<form data-form="cambiarNombre" class="tarjeta-blanca" style="display:flex;flex-direction:column;gap:10px"><label for="nuevo-nombre" style="font-weight:700">¿Cómo quieres que Clara te llame?</label>' +
       '<input id="nuevo-nombre" class="campo" type="text" maxlength="30" value="' + esc(S.nombre) + '" required><button class="btn" type="submit">Guardar nombre</button></form>' +
-      '<div class="tarjeta-blanca" style="display:flex;flex-direction:column;gap:10px"><b>Progreso</b><p class="mini">Racha, tarjetas y casos se guardan solo en este celular.</p>' +
+      '<div class="tarjeta-blanca" style="display:flex;flex-direction:column;gap:10px"><b>Progreso</b><p class="mini">Racha, tarjetas, puntajes y casos se guardan solo en este celular.</p>' +
       (mem.confirmarReinicio ? '<p style="font-size:14px">¿Segura? Se borrará todo tu progreso (tu nombre se conserva).</p><div class="fila"><button class="btn peligro" data-acc="reiniciar">Sí, borrar</button><button class="btn suave" data-acc="cancelarReinicio">Cancelar</button></div>'
         : '<button class="btn suave" data-acc="pedirReinicio">Reiniciar progreso</button>') + '</div>' +
       '<div class="tarjeta-blanca" style="display:flex;flex-direction:column;gap:8px"><b>Instalar en el celular</b><p style="font-size:14px;line-height:1.5"><b>Android (Chrome):</b> menú ⋮ → <i>Instalar app</i> o <i>Agregar a pantalla principal</i>.<br><b>iPhone (Safari):</b> botón Compartir → <i>Agregar a inicio</i>.</p></div>' +
       '<div class="tarjeta-blanca" style="display:flex;flex-direction:column;gap:8px"><b>Sobre el contenido</b><p style="font-size:14px;line-height:1.5">Esta app es una herramienta de repaso. Cada tarjeta indica su fuente sugerida; valida siempre con la guía vigente, el protocolo de tu institución y tus docentes.</p>' +
-      '<p class="mini">Ruta Rural · versión ' + VERSION + ' · ' + TARJETAS.length + ' tarjetas · ' + window.RR_GEN.totalPlantillas + ' tipos de caso</p></div>';
+      '<p class="mini">Ruta Rural · versión ' + VERSION + ' · ' + MATERIAS.length + ' materias · ' + TARJETAS.length + ' tarjetas · ' + TOTAL_JUEGOS + ' juegos · ' + Object.keys(GEN.calc).length + ' calculadoras · ' + GEN.totalPlantillas + ' tipos de caso</p></div>';
     return { html: html, nav: 'inicio' };
   };
 
   /* =========================================================
      ACCIONES
      ========================================================= */
+  function itemActual(tipo) { var p = mem.partida, it = p && p.item; return it && !it.listo && (!tipo || it.tipo === tipo) ? it : null; }
+  function limpiarLuego(it) { setTimeout(function () { if (mem.partida && mem.partida.item === it && it.malo != null) { it.malo = null; render(); } }, 700); }
+  function verFeedback() { var f = vista.querySelector('.feedback'); if (f && f.scrollIntoView) f.scrollIntoView({ block: 'nearest', behavior: 'smooth' }); }
+  function recordarVisto(firma) { S.vistosJuego.push(firma); if (S.vistosJuego.length > 500) S.vistosJuego.shift(); }
+
   var A = {
     mes: function (el) { mem.calMes += parseInt(el.getAttribute('data-d'), 10); render(); },
     pista: function () { mem.sesion.pista = !mem.sesion.pista; render(); },
@@ -391,17 +634,40 @@
       if (q < 3) s.cola.push(id);
       s.i++; s.hechas++; s.mostrada = false; s.pista = false; s.total = s.cola.length;
       S.stats.tarjetas++; marcarEstudio(); guardar();
-      if (s.hechas % 5 === 0 && s.i < s.cola.length) toast(nom(pick(window.RR_CLARA.animo)));
+      if (s.hechas % 5 === 0 && s.i < s.cola.length) toast(nom(pick(CLARA.animo)));
       render();
     },
-    libre: function () { nuevaSesion(mem.sesion ? mem.sesion.mod : '', true); render(); },
-    respJuego: function (el) {
-      var j = mem.juego; if (j.respondida) return;
-      j.respondida = true; j.elegida = parseInt(el.getAttribute('data-i'), 10);
-      S.vistosJuego.push(j.firma); if (S.vistosJuego.length > 500) S.vistosJuego.shift();
-      S.stats.juegos++; marcarEstudio(); guardar(); render();
+    libre: function () { nuevaSesion(mem.sesion ? mem.sesion.cl : '', true); render(); },
+    responder: function (el) {
+      var it = itemActual(); if (!it || !it.ops) return;
+      it.elegida = parseInt(el.getAttribute('data-i'), 10);
+      if (it.tipo === 'c') recordarVisto(it.c.firma);
+      terminarItem(it, !!it.ops[it.elegida].ok); render(); verFeedback();
     },
-    otroJuego: function () { mem.juego = null; render(); vista.scrollTop = 0; },
+    parIzq: function (el) { tocarPar('i', parseInt(el.getAttribute('data-k'), 10)); },
+    parDer: function (el) { tocarPar('d', parseInt(el.getAttribute('data-k'), 10)); },
+    paso: function (el) {
+      var it = itemActual('s'); if (!it) return;
+      var k = parseInt(el.getAttribute('data-k'), 10);
+      if (k === it.colocados.length) {
+        it.colocados.push(k); it.malo = null;
+        if (it.colocados.length === it.g.pasos.length) terminarItem(it, it.errores === 0);
+      } else { it.errores++; it.malo = k; limpiarLuego(it); }
+      render(); if (it.listo) verFeedback();
+    },
+    siguiente: function () {
+      var p = mem.partida; if (!p) return;
+      p.i++; p.item = null;
+      if (p.i < p.cola.length && p.i % 5 === 0) toast(nom(pick(CLARA.animo)), null, null, 2500);
+      render(); vista.scrollTop = 0;
+    },
+    otraPartida: function () { nuevaPartida(mem.partida.id); render(); vista.scrollTop = 0; },
+    respCalc: function (el) {
+      var x = mem.calc; if (!x || x.listo) return;
+      x.listo = true; x.elegida = parseInt(el.getAttribute('data-i'), 10);
+      recordarVisto(x.c.firma); S.stats.juegos++; marcarEstudio(); guardar(); render(); verFeedback();
+    },
+    otroCalc: function () { var t = mem.calc.tipo; mem.calc = { tipo: t, c: GEN.calc[t](S.vistosJuego), listo: false, elegida: -1 }; render(); vista.scrollTop = 0; },
     respCaso: function (el) {
       var c = mem.caso; if (c.respondida) return;
       c.respondida = true; c.elegida = parseInt(el.getAttribute('data-i'), 10);
@@ -410,34 +676,49 @@
       var chat = vista.querySelector('.chat'); if (chat) chat.scrollTop = chat.scrollHeight;
     },
     otroCaso: function () { mem.caso = null; render(); },
-    filtroVideo: function (el) { mem.filtroVideo = el.getAttribute('data-m'); location.hash = '#/videos' + (mem.filtroVideo ? '/' + mem.filtroVideo : ''); },
     pedirReinicio: function () { mem.confirmarReinicio = true; render(); },
     cancelarReinicio: function () { mem.confirmarReinicio = false; render(); },
     reiniciar: function () {
       var n = S.nombre; localStorage.removeItem(KEY);
-      S = Object.assign({ nombre: n, srs: {}, dias: [], vistosCaso: [], vistosJuego: [], nuevasHoy: { fecha: '', n: 0 }, stats: { tarjetas: 0, juegos: 0, casos: 0 } });
-      guardar(); mem.confirmarReinicio = false; mem.sesion = null; render(); toast('Listo, jefe ' + esc(n) + '. Empezamos de cero.');
+      S = estadoBase(n);
+      guardar(); mem.confirmarReinicio = false; mem.sesion = null; mem.partida = null; render(); toast('Listo, jefe ' + esc(n) + '. Empezamos de cero.');
     }
   };
+  function tocarPar(lado, k) {
+    var it = itemActual('p'); if (!it || it.hechos[k]) return;
+    if (lado === 'i') it.sel = it.sel === k ? null : k; else it.selD = it.selD === k ? null : k;
+    if (it.sel != null && it.selD != null) {
+      if (it.sel === it.selD) { it.hechos[it.sel] = true; it.malo = null; }
+      else { it.errores++; it.malo = { i: it.sel, d: it.selD }; limpiarLuego(it); }
+      it.sel = null; it.selD = null;
+      if (Object.keys(it.hechos).length === it.g.pares.length) terminarItem(it, it.errores === 0);
+    }
+    render(); if (it.listo) verFeedback();
+  }
   var FORMS = {
     nombre: function (f) { var v = f.querySelector('input').value.trim(); if (!v) return; S.nombre = v; guardar(); render(); },
     cambiarNombre: function (f) { var v = f.querySelector('input').value.trim(); if (!v) return; S.nombre = v; guardar(); toast('¡Listo! Desde ahora te digo jefe ' + esc(v) + '.'); render(); }
   };
-  document.getElementById('app').addEventListener('click', function (e) {
+  var app = document.getElementById('app');
+  app.addEventListener('click', function (e) {
     var el = e.target.closest('[data-acc]'); if (!el) return;
     var fn = A[el.getAttribute('data-acc')]; if (fn) { e.preventDefault(); fn(el); }
   });
-  document.getElementById('app').addEventListener('submit', function (e) {
+  app.addEventListener('submit', function (e) {
     var f = e.target.closest('[data-form]'); if (!f) return;
     e.preventDefault(); var fn = FORMS[f.getAttribute('data-form')]; if (fn) fn(f);
+  });
+  app.addEventListener('change', function (e) {
+    if (e.target.getAttribute('data-cambio') === 'videos') location.hash = '#/videos' + (e.target.value ? '/' + e.target.value : '');
   });
 
   /* =========================================================
      ENRUTADOR
      ========================================================= */
   var ultimaRuta = '';
+  function ruta() { var partes = location.hash.replace(/^#\/?/, '').split('/'); if (partes[0] === 'modulo') partes[0] = 'enfasis'; return partes; }
   function render() {
-    var partes = location.hash.replace(/^#\/?/, '').split('/');
+    var partes = ruta();
     var r = partes[0] || 'inicio';
     if (!S.nombre && r !== 'bienvenida') { location.replace('#/bienvenida'); return; }
     if (S.nombre && r === 'bienvenida' && ultimaRuta !== 'bienvenida') { location.replace('#/inicio'); return; }
@@ -452,8 +733,10 @@
     if (out.despues && cambio) out.despues();
   }
   window.addEventListener('hashchange', function () {
-    var r = location.hash.replace(/^#\/?/, '').split('/')[0];
+    var partes = ruta(), r = partes[0];
     if (r === 'tarjetas') mem.sesion = null;
+    if (r === 'juego' && mem.partida && (mem.partida.i >= mem.partida.cola.length || mem.partida.id !== partes[1])) mem.partida = null;
+    if (r === 'calc' && mem.calc && mem.calc.listo) mem.calc = null;
     render();
   });
   render();

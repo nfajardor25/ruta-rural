@@ -1,10 +1,11 @@
 /* Ruta Rural · service worker
    Cada vez que se publica una actualización se cambia VERSION:
    así el celular detecta la versión nueva y Clara avisa "Actualizar". */
-var VERSION = 'rr-1.0.0';
+var VERSION = 'rr-1.1.0';
 var ARCHIVOS = [
   './', 'index.html', 'styles.css', 'app.js', 'manifest.webmanifest',
-  'data/contenido.js', 'data/casos.js', 'data/videos.js',
+  'data/materias.js', 'data/base.js', 'data/p1.js', 'data/p2.js', 'data/p3.js', 'data/p4.js', 'data/p5.js', 'data/p6_8.js',
+  'data/casos.js', 'data/videos.js',
   'icons/icon-192.png', 'icons/icon-512.png', 'icons/maskable-512.png'
 ];
 
