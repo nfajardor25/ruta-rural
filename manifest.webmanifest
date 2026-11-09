@@ -1,0 +1,17 @@
+{
+  "name": "Ruta Rural · Repaso de enfermería",
+  "short_name": "Ruta Rural",
+  "description": "Repaso de enfermería para el rural con Clara: tarjetas, juegos, casos y videos.",
+  "lang": "es-CO",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#F6F4FA",
+  "theme_color": "#2A1E3F",
+  "icons": [
+    { "src": "icons/icon-192.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "icons/icon-512.png", "sizes": "512x512", "type": "image/png" },
+    { "src": "icons/maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ]
+}
